@@ -90,11 +90,6 @@ namespace Simulator.Sensors
                 SinLatitudeAnglesBuffer = null;
             }
 
-            if (Points.IsCreated)
-            {
-                Points.Dispose();
-            }
-
             AngleStart = 0.0f;
             // Assuming center of view frustum is horizontal, find the vertical FOV (of view frustum) that can encompass the tilted Lidar FOV.
             // "MaxAngle" is half of the vertical FOV of view frustum.
@@ -142,7 +137,7 @@ namespace Simulator.Sensors
             if (PointCloudMaterial != null)
                 PointCloudMaterial.SetBuffer("_PointCloud", PointCloudBuffer);
 
-            Points = new NativeArray<Vector4>(totalCount, Allocator.Persistent);
+            Points = new Vector4[totalCount];
 
             CurrentLaserCount = LaserCount;
             CurrentMeasurementsPerRotation = MeasurementsPerRotation;
@@ -246,8 +241,7 @@ namespace Simulator.Sensors
                     worldToLocal = worldToLocal * transform.worldToLocalMatrix;
                 }
 
-                var req = AsyncGPUReadback.RequestIntoNativeArray(ref Points, PointCloudBuffer);
-                req.WaitForCompletion();
+                PointCloudBuffer.GetData(Points);
 
                 Task.Run(() =>
                 {
