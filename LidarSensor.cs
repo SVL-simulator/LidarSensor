@@ -22,6 +22,10 @@ namespace Simulator.Sensors
     [SensorType("Lidar", new[] { typeof(PointCloudData) })]
     public partial class LidarSensor : LidarSensorBase
     {
+        [SensorParameter]
+        public SensorDistributionType SensorDistributionType = SensorDistributionType.UltraHighLoad;
+        public override SensorDistributionType DistributionType => SensorDistributionType;
+
         private static class Properties
         {
             public static readonly int Input = Shader.PropertyToID("_Input");
