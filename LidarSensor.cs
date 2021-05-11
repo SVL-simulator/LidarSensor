@@ -18,13 +18,16 @@ using PointCloudData = Simulator.Bridge.Data.PointCloudData;
 namespace Simulator.Sensors
 {
     using UnityEngine.Rendering;
+    using UnityEngine.Serialization;
 
     [SensorType("Lidar", new[] { typeof(PointCloudData) })]
     public partial class LidarSensor : LidarSensorBase
     {
+        [FormerlySerializedAs("PerformanceLoad")]
         [SensorParameter]
-        public SensorDistributionType SensorDistributionType = SensorDistributionType.UltraHighLoad;
-        public override SensorDistributionType DistributionType => SensorDistributionType;
+        public float performanceLoad = 1.0f;
+        public override float PerformanceLoad => performanceLoad;
+        public override SensorDistributionType DistributionType => SensorDistributionType.ClientOnly;
 
         private static class Properties
         {
