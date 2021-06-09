@@ -159,15 +159,23 @@ namespace Simulator.Sensors
             // If VerticalRayAngles array is not provided, use uniformly distributed angles.
             if (VerticalRayAngles.Count == 0)
             {
-                float deltaLatitudeAngle = FieldOfView / LaserCount;
-                int index = 0;
-                float angle = StartLatitudeAngle;
-                while (index < LaserCount)
+                if (LaserCount == 1)
                 {
-                    SinLatitudeAngles[index] = Mathf.Sin(angle * Mathf.Deg2Rad);
-                    CosLatitudeAngles[index] = Mathf.Cos(angle * Mathf.Deg2Rad);
-                    index++;
-                    angle -= deltaLatitudeAngle;
+                    SinLatitudeAngles[0] = Mathf.Sin((90.0f + CenterAngle) * Mathf.Deg2Rad);
+                    CosLatitudeAngles[0] = Mathf.Cos((90.0f + CenterAngle) * Mathf.Deg2Rad);
+                }
+                else
+                {
+                    float deltaLatitudeAngle = FieldOfView / LaserCount;
+                    int index = 0;
+                    float angle = StartLatitudeAngle;
+                    while (index < LaserCount)
+                    {
+                        SinLatitudeAngles[index] = Mathf.Sin(angle * Mathf.Deg2Rad);
+                        CosLatitudeAngles[index] = Mathf.Cos(angle * Mathf.Deg2Rad);
+                        index++;
+                        angle -= deltaLatitudeAngle;
+                    }
                 }
             }
             else
