@@ -45,6 +45,12 @@ namespace Simulator.Sensors
             public static readonly int Color = Shader.PropertyToID("_Color");
         }
 
+        public enum MessageTypes
+        {
+            PointCloud2,
+            LaserScan
+        }
+
         [HideInInspector]
         public int TemplateIndex;
 
@@ -76,7 +82,7 @@ namespace Simulator.Sensors
         public float RotationFrequency = 5.0f; // Hz
 
         [SensorParameter]
-        [Range(18, 6000)] // minmimum is 360/HorizontalAngleLimit
+        [Range(18, 6000)]
         public int MeasurementsPerRotation = 1500; // for each ray
 
         [SensorParameter]
@@ -89,29 +95,71 @@ namespace Simulator.Sensors
         [SensorParameter]
         public Color PointColor = Color.red;
 
-        [Range(0f, Mathf.PI)]
-        public float Angle = Mathf.PI * 0.5f;
-
         [SensorParameter]
         public int CubemapSize = 1024;
 
-        public ComputeShader computeShader;
+        [SensorParameter]
+        [Range(0f, 360f)]
+        public float ForwardAngle = 0f;
 
-        private BridgeInstance Bridge;
+        [SensorParameter]
+        [Range(0f, 360f)]
+        public float HorizontalAngle = 360f;
 
-        private Publisher<PointCloudData> Publish;
-
-        uint Sequence;
-
-        private float NextCaptureTime;
-
-        private Camera sensorCamera;
-
-        private HDAdditionalCameraData hdAdditionalCameraData;
+        [SensorParameter]
+        public MessageTypes MessageType = MessageTypes.PointCloud2;
 
         private readonly int faceMask = 1 << (int) CubemapFace.PositiveX | 1 << (int) CubemapFace.NegativeX |
                                         1 << (int) CubemapFace.PositiveY | 1 << (int) CubemapFace.NegativeY |
                                         1 << (int) CubemapFace.PositiveZ | 1 << (int) CubemapFace.NegativeZ;
+
+        public ComputeShader computeShader;
+
+        [FormerlySerializedAs("PerformanceLoad")]
+        [SensorParameter]
+        public float performanceLoad = 1.0f;
+
+        public override float PerformanceLoad => performanceLoad;
+        public override SensorDistributionType DistributionType => SensorDistributionType.ClientOnly;
+
+        private SensorRenderTarget renderTarget;
+
+        private Material PointCloudMaterial;
+        private ShaderTagId passId;
+        private ComputeShader cs;
+
+        private BridgeInstance Bridge;
+        private Publisher<PointCloudData> PointCloudPublish;
+        private Publisher<LaserScanData> LaserScanPublish;
+
+        uint Sequence;
+        private float NextCaptureTime;
+
+        private Camera sensorCamera;
+        private HDAdditionalCameraData hdAdditionalCameraData;
+        private Vector4[] Points;
+
+        private ComputeBuffer PointCloudBuffer;
+        private ComputeBuffer LatitudeAnglesBuffer;
+
+        private ProfilerMarker RenderMarker = new ProfilerMarker("Lidar.Render");
+        private ProfilerMarker ComputeMarker = new ProfilerMarker("Lidar.Compute");
+        private ProfilerMarker VisualizeMarker = new ProfilerMarker("Lidar.Visualzie");
+
+        private float MaxAngle;
+        private float MinAngle;
+        private float DeltaLongitudeAngle;
+        private float StartLongitudeOffset;
+        private int CurrentLaserCount;
+        private int CurrentUsedMeasurementsPerRotation;
+        private int UsedMeasurementsPerRotation;
+        private float CurrentFieldOfView;
+        private List<float> CurrentVerticalRayAngles;
+        private float CurrentCenterAngle;
+        private float CurrentForwardAngle;
+        private float CurrentHorizontalAngle;
+        private float CurrentMinDistance;
+        private float CurrentMaxDistance;
 
         private Camera SensorCamera
         {
@@ -134,38 +182,6 @@ namespace Simulator.Sensors
                 return hdAdditionalCameraData;
             }
         }
-
-        [FormerlySerializedAs("PerformanceLoad")]
-        [SensorParameter]
-        public float performanceLoad = 1.0f;
-
-        public override float PerformanceLoad => performanceLoad;
-        public override SensorDistributionType DistributionType => SensorDistributionType.ClientOnly;
-
-        private SensorRenderTarget renderTarget;
-
-        private Material PointCloudMaterial;
-        private ShaderTagId passId;
-        private ComputeShader cs;
-
-        private Vector4[] Points;
-
-        private ComputeBuffer PointCloudBuffer;
-        private ComputeBuffer LatitudeAnglesBuffer;
-
-        private ProfilerMarker RenderMarker = new ProfilerMarker("Lidar.Render");
-        private ProfilerMarker ComputeMarker = new ProfilerMarker("Lidar.Compute");
-        private ProfilerMarker VisualizeMarker = new ProfilerMarker("Lidar.Visualzie");
-
-        private float MaxAngle;
-        private float DeltaLongitudeAngle;
-        private int CurrentLaserCount;
-        private int CurrentMeasurementsPerRotation;
-        private float CurrentFieldOfView;
-        private List<float> CurrentVerticalRayAngles;
-        private float CurrentCenterAngle;
-        private float CurrentMinDistance;
-        private float CurrentMaxDistance;
 
         protected override void Initialize()
         {
@@ -218,7 +234,9 @@ namespace Simulator.Sensors
                 LatitudeAnglesBuffer = null;
             }
 
-            DeltaLongitudeAngle = 1f / MeasurementsPerRotation;
+            UsedMeasurementsPerRotation = (int) (MeasurementsPerRotation * HorizontalAngle / 360f);
+            DeltaLongitudeAngle = HorizontalAngle / 360f / UsedMeasurementsPerRotation;
+            StartLongitudeOffset = ForwardAngle / 360f - HorizontalAngle / 720f + 0.5f;
             MaxAngle = Mathf.Abs(CenterAngle) + FieldOfView / 2.0f;
 
             float startLatitudeAngle;
@@ -227,6 +245,7 @@ namespace Simulator.Sensors
             if (VerticalRayAngles.Count == 0)
             {
                 MaxAngle = Mathf.Abs(CenterAngle) + FieldOfView / 2.0f;
+                MinAngle = Mathf.Abs(CenterAngle) - FieldOfView / 2.0f;
 
                 startLatitudeAngle = 90.0f + MaxAngle;
                 //If the Lidar is tilted up, ignore lower part of the vertical FOV.
@@ -242,11 +261,14 @@ namespace Simulator.Sensors
                 var endLatitudeAngle = 90.0f - VerticalRayAngles.Max();
                 FieldOfView = startLatitudeAngle - endLatitudeAngle;
                 MaxAngle = Mathf.Max(startLatitudeAngle - 90.0f, 90.0f - endLatitudeAngle);
+                MinAngle = Mathf.Min(startLatitudeAngle - 90.0f, 90.0f - endLatitudeAngle);
             }
 
             CurrentVerticalRayAngles = new List<float>(VerticalRayAngles);
             CurrentLaserCount = LaserCount;
-            CurrentMeasurementsPerRotation = MeasurementsPerRotation;
+            CurrentUsedMeasurementsPerRotation = UsedMeasurementsPerRotation;
+            CurrentHorizontalAngle = HorizontalAngle;
+            CurrentForwardAngle = ForwardAngle;
             CurrentFieldOfView = FieldOfView;
             CurrentCenterAngle = CenterAngle;
             CurrentMinDistance = MinDistance;
@@ -258,7 +280,6 @@ namespace Simulator.Sensors
             {
                 if (LaserCount == 1)
                 {
-                    Debug.Log("Center angle: " + CenterAngle);
                     latitudeAngles[0] = 1f - (90f + CenterAngle) * Mathf.Deg2Rad / Mathf.PI;
                 }
                 else
@@ -285,7 +306,7 @@ namespace Simulator.Sensors
             LatitudeAnglesBuffer = new ComputeBuffer(LaserCount, sizeof(float));
             LatitudeAnglesBuffer.SetData(latitudeAngles);
 
-            var totalCount = LaserCount * MeasurementsPerRotation;
+            var totalCount = LaserCount * UsedMeasurementsPerRotation;
             PointCloudBuffer = new ComputeBuffer(totalCount, UnsafeUtility.SizeOf<Vector4>());
             Points = new Vector4[totalCount];
 
@@ -312,12 +333,12 @@ namespace Simulator.Sensors
             cmd.SetComputeBufferParam(cs, kernel, Properties.Output, PointCloudBuffer);
             cmd.SetComputeBufferParam(cs, kernel, Properties.LatitudeAngles, LatitudeAnglesBuffer);
             cmd.SetComputeIntParam(cs, Properties.LaserCount, LaserCount);
-            cmd.SetComputeIntParam(cs, Properties.MeasuresPerRotation, MeasurementsPerRotation);
+            cmd.SetComputeIntParam(cs, Properties.MeasuresPerRotation, UsedMeasurementsPerRotation);
             cmd.SetComputeVectorParam(cs, Properties.Origin, SensorCamera.transform.position);
             cmd.SetComputeMatrixParam(cs, Properties.RotMatrix, Matrix4x4.Rotate(transform.rotation));
             cmd.SetComputeMatrixParam(cs, Properties.Transform, transform.worldToLocalMatrix);
-            cmd.SetComputeVectorParam(cs, Properties.PackedVec, new Vector4(MaxDistance, DeltaLongitudeAngle, MinDistance, 0f));
-            cmd.DispatchCompute(cs, kernel, HDRPUtilities.GetGroupSize(MeasurementsPerRotation, 8), HDRPUtilities.GetGroupSize(LaserCount, 8), 1);
+            cmd.SetComputeVectorParam(cs, Properties.PackedVec, new Vector4(MaxDistance, DeltaLongitudeAngle, MinDistance, StartLongitudeOffset));
+            cmd.DispatchCompute(cs, kernel, HDRPUtilities.GetGroupSize(UsedMeasurementsPerRotation, 8), HDRPUtilities.GetGroupSize(LaserCount, 8), 1);
             ComputeMarker.End();
 
             context.ExecuteCommandBuffer(cmd);
@@ -328,15 +349,29 @@ namespace Simulator.Sensors
         public override void OnBridgeSetup(BridgeInstance bridge)
         {
             Bridge = bridge;
-            Publish = bridge.AddPublisher<PointCloudData>(Topic);
+
+            if (MessageType == MessageTypes.LaserScan)
+            {
+                if (LaserCount == 1)
+                    LaserScanPublish = bridge.AddPublisher<LaserScanData>(Topic);
+                else
+                {
+                    Debug.LogError("LaserScan message type is only valid when LaserCount is 1. Falling back to PointCloud2.");
+                    PointCloudPublish = bridge.AddPublisher<PointCloudData>(Topic);
+                }
+            }
+            else
+                PointCloudPublish = bridge.AddPublisher<PointCloudData>(Topic);
         }
 
         private void Update()
         {
             if (LaserCount != CurrentLaserCount ||
-                MeasurementsPerRotation != CurrentMeasurementsPerRotation ||
+                UsedMeasurementsPerRotation != CurrentUsedMeasurementsPerRotation ||
                 !Mathf.Approximately(FieldOfView, CurrentFieldOfView) ||
                 !Mathf.Approximately(CenterAngle, CurrentCenterAngle) ||
+                !Mathf.Approximately(ForwardAngle, CurrentForwardAngle) ||
+                !Mathf.Approximately(HorizontalAngle, CurrentHorizontalAngle) ||
                 !Mathf.Approximately(MinDistance, CurrentMinDistance) ||
                 !Mathf.Approximately(MaxDistance, CurrentMaxDistance) ||
                 !VerticalRayAngles.SequenceEqual(CurrentVerticalRayAngles))
@@ -403,21 +438,49 @@ namespace Simulator.Sensors
 
             PointCloudBuffer.GetData(Points);
 
-            Task.Run(() =>
+            if (PointCloudPublish != null)
             {
-                Publish(new PointCloudData()
+                var message = new PointCloudData()
                 {
                     Name = Name,
                     Frame = Frame,
                     Time = SimulatorManager.Instance.CurrentTime,
-                    Sequence = Sequence++,
+                    Sequence = Sequence,
 
                     LaserCount = CurrentLaserCount,
                     Transform = worldToLocal,
                     Points = Points,
                     PointCount = Points.Length
-                });
-            });
+                };
+
+                if (BridgeMessageDispatcher.Instance.TryQueueTask(PointCloudPublish, message))
+                    Sequence++;
+            }
+            else if (LaserScanPublish != null)
+            {
+                var maxRad = (1f - StartLongitudeOffset - 0.5f) * 2 * Mathf.PI;
+                var minRad = maxRad - HorizontalAngle * Mathf.Deg2Rad;
+
+                var message = new LaserScanData()
+                {
+                    Name = Name,
+                    Frame = Frame,
+                    Time = SimulatorManager.Instance.CurrentTime,
+                    Sequence = Sequence,
+                    MinAngle = minRad,
+                    MaxAngle = maxRad,
+                    AngleStep = DeltaLongitudeAngle * 2 * Mathf.PI,
+                    RangeMin = MinDistance,
+                    RangeMax = MaxDistance,
+                    TimeIncrement = 0f,
+                    ScanTime = 1f / RotationFrequency,
+                    Transform = worldToLocal,
+                    Points = Points,
+                };
+
+                if (BridgeMessageDispatcher.Instance.TryQueueTask(LaserScanPublish, message))
+                    Sequence++;
+            }
         }
 
         public override void OnVisualize(Visualizer visualizer)

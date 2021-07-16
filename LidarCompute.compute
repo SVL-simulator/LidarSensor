@@ -17,7 +17,7 @@ CBUFFER_START(cb0)
     float4 _Origin;
     float4x4 _Transform;
     float4x4 _RotMatrix;
-    float4 _PackedVec; // x: distance max, y: angle delta, z: distance min
+    float4 _PackedVec; // x: distance max, y: angle delta, z: distance min, w: start longitude offset
 CBUFFER_END
 
 TextureCube<float4> _InputCubemapTexture;
@@ -39,7 +39,7 @@ void CUBE_COMPUTE (uint3 id : SV_DispatchThreadID)
         return;
 
     const float lat = _LatitudeAngles[id.y];
-    const float lon = id.x * _PackedVec.y;
+    const float lon = _PackedVec.w + id.x * _PackedVec.y;
     float3 dir = normalize(LatlongToDirectionCoordinate(float2(lon, lat)));
 
     const float4 sample = _InputCubemapTexture.SampleLevel(sampler_InputCubemapTexture, dir, 0);

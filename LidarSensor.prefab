@@ -218,7 +218,9 @@ MonoBehaviour:
   Compensated: 1
   PointSize: 2
   PointColor: {r: 1, g: 0, b: 0, a: 1}
-  Angle: 1.5707964
   CubemapSize: 1024
+  ForwardAngle: 0
+  HorizontalAngle: 360
+  MessageType: 0
   computeShader: {fileID: 7200000, guid: 847e4516529b2bf4cb06f36513e7115f, type: 3}
   performanceLoad: 1
