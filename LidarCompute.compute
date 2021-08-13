@@ -13,6 +13,7 @@
 CBUFFER_START(cb0)
     int _LaserCount;
     int _MeasurementsPerRotation;
+    float _AntialiasingThreshold;
 
     float4 _Origin;
     float4x4 _Transform;
@@ -52,7 +53,7 @@ void CUBE_COMPUTE (uint3 id : SV_DispatchThreadID)
     const float intensityBL = sampleBL.a;
 
     const float distDiff = abs(distance - distanceBL) * _PackedVec.x;
-    if (distDiff < 0.1)
+    if (distDiff < _AntialiasingThreshold)
     {
         distance = distanceBL;
         intensity = intensityBL;

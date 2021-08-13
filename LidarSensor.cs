@@ -9,9 +9,9 @@ namespace Simulator.Sensors
 {
     using System.Collections.Generic;
     using System.Linq;
-    using System.Threading.Tasks;
     using Bridge;
     using Bridge.Data;
+    using Components;
     using PointCloud;
     using UI;
     using Unity.Collections.LowLevel.Unsafe;
@@ -24,7 +24,7 @@ namespace Simulator.Sensors
 
     [SensorType("Lidar", new[] { typeof(PointCloudData) })]
     [RequireComponent(typeof(Camera))]
-    public partial class LidarSensor : SensorBase
+    public partial class LidarSensor : SensorBase, IPointCloudGenerator
     {
         private static readonly Matrix4x4 LidarTransform = new Matrix4x4(new Vector4(0, -1, 0, 0), new Vector4(0, 0, 1, 0), new Vector4(1, 0, 0, 0), Vector4.zero);
 
@@ -43,6 +43,7 @@ namespace Simulator.Sensors
             public static readonly int LocalToWorld = Shader.PropertyToID("_LocalToWorld");
             public static readonly int Size = Shader.PropertyToID("_Size");
             public static readonly int Color = Shader.PropertyToID("_Color");
+            public static readonly int AntialiasingThreshold = Shader.PropertyToID("_AntialiasingThreshold");
         }
 
         public enum MessageTypes
@@ -105,6 +106,9 @@ namespace Simulator.Sensors
         [SensorParameter]
         [Range(0f, 360f)]
         public float HorizontalAngle = 360f;
+
+        [SensorParameter]
+        public float AntialiasingThreshold = 0.1f;
 
         [SensorParameter]
         public MessageTypes MessageType = MessageTypes.PointCloud2;
@@ -334,6 +338,7 @@ namespace Simulator.Sensors
             cmd.SetComputeBufferParam(cs, kernel, Properties.LatitudeAngles, LatitudeAnglesBuffer);
             cmd.SetComputeIntParam(cs, Properties.LaserCount, LaserCount);
             cmd.SetComputeIntParam(cs, Properties.MeasuresPerRotation, UsedMeasurementsPerRotation);
+            cmd.SetComputeFloatParam(cs, Properties.AntialiasingThreshold, AntialiasingThreshold);
             cmd.SetComputeVectorParam(cs, Properties.Origin, SensorCamera.transform.position);
             cmd.SetComputeMatrixParam(cs, Properties.RotMatrix, Matrix4x4.Rotate(transform.rotation));
             cmd.SetComputeMatrixParam(cs, Properties.Transform, transform.worldToLocalMatrix);
@@ -499,5 +504,43 @@ namespace Simulator.Sensors
         {
             //
         }
+
+        #region IPointCloudGenerator
+
+        public void ApplySettings(LidarTemplate template)
+        {
+            Initialize();
+            CubemapSize = 2048;
+            AntialiasingThreshold = 0f;
+            LaserCount = template.LaserCount;
+            MinDistance = template.MinDistance;
+            MaxDistance = template.MaxDistance;
+            RotationFrequency = template.RotationFrequency;
+            MeasurementsPerRotation = template.MeasurementsPerRotation;
+            FieldOfView = template.FieldOfView;
+            VerticalRayAngles = template.VerticalRayAngles == null ? new List<float>() : new List<float>(template.VerticalRayAngles);
+            CenterAngle = template.CenterAngle;
+            SensorCamera.fieldOfView = FieldOfView;
+            SensorCamera.nearClipPlane = MinDistance;
+            SensorCamera.farClipPlane = MaxDistance;
+            Reset();
+            CheckTexture();
+        }
+
+        public Vector4[] GeneratePoints(Vector3 position)
+        {
+            transform.position = position;
+            Compensated = true;
+            RenderCamera();
+            PointCloudBuffer.GetData(Points);
+            return Points;
+        }
+
+        public void Cleanup()
+        {
+            Deinitialize();
+        }
+
+        #endregion
     }
 }
