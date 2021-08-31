@@ -146,6 +146,8 @@ namespace Simulator.Sensors
         private ComputeBuffer PointCloudBuffer;
         private ComputeBuffer LatitudeAnglesBuffer;
 
+        private GpuReadbackPool<GpuReadbackData<Vector4>, Vector4> ReadbackPool;
+
         private ProfilerMarker RenderMarker = new ProfilerMarker("Lidar.Render");
         private ProfilerMarker ComputeMarker = new ProfilerMarker("Lidar.Compute");
         private ProfilerMarker VisualizeMarker = new ProfilerMarker("Lidar.Visualzie");
@@ -195,6 +197,8 @@ namespace Simulator.Sensors
             PointCloudMaterial = new Material(RuntimeSettings.Instance.PointCloudShader);
             HDAdditionalCameraData.hasPersistentHistory = true;
             HDAdditionalCameraData.customRender += CustomRender;
+            ReadbackPool = new GpuReadbackPool<GpuReadbackData<Vector4>, Vector4>();
+            ReadbackPool.Initialize(GetTotalRayCount(), OnReadbackComplete);
 
             Reset();
         }
@@ -209,6 +213,8 @@ namespace Simulator.Sensors
 
             LatitudeAnglesBuffer?.Release();
             LatitudeAnglesBuffer = null;
+
+            ReadbackPool?.Dispose();
         }
 
         public void ApplyTemplate()
@@ -222,6 +228,13 @@ namespace Simulator.Sensors
             FieldOfView = values.FieldOfView;
             VerticalRayAngles = new List<float>(values.VerticalRayAngles);
             CenterAngle = values.CenterAngle;
+        }
+
+        private int GetTotalRayCount()
+        {
+            var usedMeasurementsPerRotation = (int) (MeasurementsPerRotation * HorizontalAngle / 360f);
+            var totalCount = LaserCount * usedMeasurementsPerRotation;
+            return totalCount;
         }
 
         private void Reset()
@@ -313,6 +326,7 @@ namespace Simulator.Sensors
             var totalCount = LaserCount * UsedMeasurementsPerRotation;
             PointCloudBuffer = new ComputeBuffer(totalCount, UnsafeUtility.SizeOf<Vector4>());
             Points = new Vector4[totalCount];
+            ReadbackPool.Resize(totalCount);
 
             if (PointCloudMaterial != null)
                 PointCloudMaterial.SetBuffer(Properties.PointCloud, PointCloudBuffer);
@@ -417,7 +431,7 @@ namespace Simulator.Sensors
             if (Time.time >= NextCaptureTime)
             {
                 RenderCamera();
-                SendMessage();
+                ReadbackPool.StartReadback(PointCloudBuffer);
 
                 if (NextCaptureTime < Time.time - Time.deltaTime)
                 {
@@ -428,20 +442,18 @@ namespace Simulator.Sensors
                     NextCaptureTime += 1.0f / RotationFrequency;
                 }
             }
+
+            ReadbackPool.Process();
         }
 
-        private void SendMessage()
+        private void OnReadbackComplete(GpuReadbackData<Vector4> data)
         {
             if (!(Bridge is {Status: Status.Connected}))
                 return;
 
             var worldToLocal = LidarTransform;
             if (Compensated)
-            {
                 worldToLocal = worldToLocal * transform.worldToLocalMatrix;
-            }
-
-            PointCloudBuffer.GetData(Points);
 
             if (PointCloudPublish != null)
             {
@@ -449,12 +461,12 @@ namespace Simulator.Sensors
                 {
                     Name = Name,
                     Frame = Frame,
-                    Time = SimulatorManager.Instance.CurrentTime,
+                    Time = data.captureTime,
                     Sequence = Sequence,
 
                     LaserCount = CurrentLaserCount,
                     Transform = worldToLocal,
-                    Points = Points,
+                    NativePoints = data.gpuData,
                     PointCount = Points.Length
                 };
 
@@ -466,11 +478,14 @@ namespace Simulator.Sensors
                 var maxRad = (1f - StartLongitudeOffset - 0.5f) * 2 * Mathf.PI;
                 var minRad = maxRad - HorizontalAngle * Mathf.Deg2Rad;
 
+                // TODO: add support for native arrays to LaserScanData to skip this copy
+                data.gpuData.CopyTo(Points);
+
                 var message = new LaserScanData()
                 {
                     Name = Name,
                     Frame = Frame,
-                    Time = SimulatorManager.Instance.CurrentTime,
+                    Time = data.captureTime,
                     Sequence = Sequence,
                     MinAngle = minRad,
                     MaxAngle = maxRad,
