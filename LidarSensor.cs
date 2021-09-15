@@ -7,6 +7,7 @@
 
 namespace Simulator.Sensors
 {
+    using System;
     using System.Collections.Generic;
     using System.Linq;
     using Bridge;
@@ -500,6 +501,37 @@ namespace Simulator.Sensors
 
                 if (BridgeMessageDispatcher.Instance.TryQueueTask(LaserScanPublish, message))
                     Sequence++;
+            }
+        }
+
+        public bool Save(string path)
+        {
+            CheckTexture();
+            RenderCamera();
+
+            PointCloudBuffer.GetData(Points);
+
+            var worldToLocal = LidarTransform;
+            if (Compensated)
+                worldToLocal = worldToLocal * transform.worldToLocalMatrix;
+
+            try
+            {
+                using (var writer = new PcdWriter(path))
+                {
+                    foreach (var point in Points)
+                    {
+                        if (point != Vector4.zero)
+                            writer.Write(worldToLocal.MultiplyPoint3x4(point), point.w);
+                    }
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+                return false;
             }
         }
 
